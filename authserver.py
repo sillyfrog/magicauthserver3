@@ -3,6 +3,8 @@
 # from flask import Flask, render_template, request, redirect, url_for, Response
 import flask
 from flask import request
+import pyotp
+import qrcode
 import argparse
 import crypt
 import getpass
@@ -10,16 +12,28 @@ import hashlib
 import os
 import random
 import sys
+import base64
+from io import BytesIO
 import time
 
 LOGINS_FILE = "proxylogins"
+OTP_FILE = "otpkeys"
 COOKIE = "magicproxyauth"
 AUTHFORM = "authform.html"
 LOGINS = {}
+OTPHASHES = {}
+
 authdcookies = set()
+unverifiedotp = {}
 
 
 app = flask.Flask(__name__)
+
+OTP_TEMPLATE = """
+e = document.getElementById("forotp");
+e.innerHTML="Scan this code in your Authy app:<br><img src='data:image/png;base64,{}'>";
+error("Verify OTP Code");
+"""
 
 
 @app.route("/", defaults={"path": ""}, methods=["GET"])
@@ -47,14 +61,66 @@ def index(path):
 def submit(**path):
     username = request.headers.get("X-set-username")
     password = request.headers.get("X-set-password")
+    otp = request.headers.get("X-set-otp")
     authvalue = getauthcookie()
 
+    if username:
+        username = username.lower()
+
     if authvalue and checklogin(username, password):
-        authdcookies.add(authvalue)
-        return "location.reload();", 401
+        otpcheck = checkotp(username, otp)
+        if otpcheck == None:
+            # Username and password is OK, but we need to create a OTP for them
+            otpuri = addotp(username)
+            img = qrcode.make(otpuri)
+            buf = BytesIO()
+            img.save(buf, format="PNG")
+            img_str = base64.b64encode(buf.getvalue()).decode()
+            return OTP_TEMPLATE.format(img_str), 401
+
+        elif otpcheck == True:
+            authdcookies.add(authvalue)
+            return "location.reload();", 401
+        else:
+            time.sleep(0.5)
+            return "error('Wrong username, password or code');", 401
     else:
         time.sleep(1)
-        return "alert('Wrong username/password or cookie not set');", 401
+        return "error('Wrong username/password or cookie not set');", 401
+
+
+def checkotp(username, otp):
+    if username in OTPHASHES:
+        otphash = OTPHASHES[username]
+    elif username in unverifiedotp:
+        otphash = unverifiedotp[username]
+    else:
+        return None
+    totp = pyotp.TOTP(otphash)
+    verified = totp.verify(otp, valid_window=1)
+    if username in unverifiedotp:
+        if verified:
+            del unverifiedotp[username]
+            OTPHASHES[username.lower()] = otphash
+            saveotps()
+        else:
+            # We have an OTP code for this user, but the have not yet verified it.
+            return None
+    return verified
+
+
+def addotp(username):
+    if username in unverifiedotp:
+        otphash = unverifiedotp[username]
+    else:
+        otphash = pyotp.random_base32()
+        unverifiedotp[username] = otphash
+    totp = pyotp.TOTP(otphash)
+    return totp.provisioning_uri(username, COOKIE_DOMAIN)
+
+
+def saveotps():
+    savefile(OTPHASHES, OTP_FILE)
 
 
 def getauthcookie():
@@ -71,13 +137,21 @@ def gencookie():
 
 
 def loadlogins(ignoreerrors=False):
-    try:
-        f = open(LOGINS_FILE)
-    except Exception as e:
-        if not ignoreerrors:
-            print(("Error loading password file: {}".format(e)))
-        return
+    LOGINS.update(loadfile(LOGINS_FILE, ignoreerrors))
+    OTPHASHES.update(loadfile(OTP_FILE, True))
 
+
+def loadfile(path, ignoreerrors=False):
+    try:
+        f = open(path)
+    except Exception as e:
+        if ignoreerrors:
+            return {}
+        else:
+            print(("Error loading {} file: {}".format(path, e)))
+            return None
+
+    ret = {}
     for line in f:
         line = line.strip()
         parts = line.split()
@@ -88,7 +162,8 @@ def loadlogins(ignoreerrors=False):
         if len(username) < 3 or len(password) < 3:
             continue
 
-        LOGINS[username.lower()] = password
+        ret[username.lower()] = password
+    return ret
 
 
 def checklogin(username, password):
@@ -101,8 +176,12 @@ def checklogin(username, password):
 def addlogin(username, password):
     loadlogins(ignoreerrors=True)
     LOGINS[username.lower()] = crypt.crypt(password, crypt.mksalt())
-    f = open(LOGINS_FILE, "w")
-    for user, password in LOGINS.items():
+    savefile(LOGINS, LOGINS_FILE)
+
+
+def savefile(data, path):
+    f = open(path, "w")
+    for user, password in data.items():
         f.write("{}\t{}\n".format(user, password))
     f.close()
 

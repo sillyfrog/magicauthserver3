@@ -93,6 +93,14 @@ body {
   }
 }
 
+#error {
+  font-size: 12px;
+  color: #c00;
+  text-align: center;
+  font-weight: bolder;
+  background: #fee;
+}
+
 :-moz-placeholder {
   color: #c9c9c9 !important;
   font-size: 13px;
@@ -171,8 +179,18 @@ input[type=submit] {
         document.getElementById('username').value);
       request.setRequestHeader('X-set-password',
         document.getElementById('password').value);
+      request.setRequestHeader('X-set-otp',
+        document.getElementById('otp').value);
       request.send(null);
+
+      document.getElementById("error").innerHTML = "...";
+      document.getElementById("forotp").innerHTML = "";
+
       return false;
+    }
+    function error(msg) {
+      e = document.getElementById("error");
+      e.innerHTML = msg;
     }
   </script>
 
@@ -184,8 +202,12 @@ input[type=submit] {
       <form method="post" onSubmit="return logmein();">
         <p><input type="text" id="username" value="" placeholder="Username"></p>
         <p><input type="password" id="password" value="" placeholder="Password"></p>
+        <p><input type="text" id="otp" value="" placeholder="Authy Code"></p>
+        <small>Leave blank if not yet configured</small>
+        <div id="error"></div>
         <p class="submit"><input type="submit" name="commit" value="Login"></p>
       </form>
+      <div id="forotp"></div>
     </div>
 
   </section>

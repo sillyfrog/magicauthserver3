@@ -8,19 +8,20 @@ import qrcode
 import argparse
 import crypt
 import getpass
-import hashlib
 import os
-import random
+import secrets
 import sys
 import base64
 from io import BytesIO
 import time
 
 LOGINS_FILE = "proxylogins"
+BASIC_AUTH_LOGINS_FILE = "basicauthlogins"
 OTP_FILE = "otpkeys"
 COOKIE = "magicproxyauth"
 AUTHFORM = "authform.html"
 LOGINS = {}
+BASIC_AUTH_LOGINS = {}
 OTPHASHES = {}
 
 authdcookies = set()
@@ -42,6 +43,19 @@ def index(path):
     authcookie = getauthcookie()
     if authcookie in authdcookies:
         return "Auth"
+
+    basicauth = request.headers.get("Authorization")
+    if basicauth:
+        parts = basicauth.split()
+        if len(parts) == 2:
+            if parts[0].lower() == "basic":
+                try:
+                    details = base64.b64decode(parts[1]).decode()
+                    username, password = details.split(":", 1)
+                except:
+                    username, password = (None, None)
+                if checkbasicauthlogin(username, password):
+                    return "Auth"
 
     resp = flask.make_response(flask.render_template("authform.jinja"))
     if authcookie is None:
@@ -126,18 +140,18 @@ def saveotps():
 def getauthcookie():
     authvalue = request.cookies.get(COOKIE)
     if authvalue:
-        if len(authvalue) != 128:
+        if len(authvalue) < 24:
             authvalue = None
     return authvalue
 
 
 def gencookie():
-    i = str(random.getrandbits(100000))
-    return hashlib.sha512(i.encode()).hexdigest()
+    return secrets.token_urlsafe()
 
 
 def loadlogins(ignoreerrors=False):
     LOGINS.update(loadfile(LOGINS_FILE, ignoreerrors))
+    BASIC_AUTH_LOGINS.update(loadfile(BASIC_AUTH_LOGINS_FILE, ignoreerrors))
     OTPHASHES.update(loadfile(OTP_FILE, True))
 
 
@@ -148,7 +162,7 @@ def loadfile(path, ignoreerrors=False):
         if ignoreerrors:
             return {}
         else:
-            print(("Error loading {} file: {}".format(path, e)))
+            log(("Error loading {} file: {}".format(path, e)))
             return None
 
     ret = {}
@@ -173,10 +187,30 @@ def checklogin(username, password):
     return False
 
 
+def checkbasicauthlogin(username, password):
+    if not username or not password:
+        return False
+    if username.lower() in BASIC_AUTH_LOGINS:
+        if BASIC_AUTH_LOGINS[username] == crypt.crypt(
+            password, BASIC_AUTH_LOGINS[username]
+        ):
+            return True
+    return False
+
+
 def addlogin(username, password):
     loadlogins(ignoreerrors=True)
     LOGINS[username.lower()] = crypt.crypt(password, crypt.mksalt())
     savefile(LOGINS, LOGINS_FILE)
+
+
+def addbasiclogin(username):
+
+    loadlogins(ignoreerrors=True)
+    password = secrets.token_urlsafe()
+    print("New password for {}: {}".format(username, password))
+    BASIC_AUTH_LOGINS[username.lower()] = crypt.crypt(password, crypt.mksalt())
+    savefile(BASIC_AUTH_LOGINS, BASIC_AUTH_LOGINS_FILE)
 
 
 def savefile(data, path):
@@ -185,6 +219,13 @@ def savefile(data, path):
         f.write("{}\t{}\n".format(user, password))
     f.close()
 
+def promptpassword():
+    while 1:
+        password1 = getpass.getpass("Password: ")
+        password2 = getpass.getpass("Re-enter Password: ")
+        if password1 == password2:
+            return password1
+        print("Passwords don't match!")
 
 def main():
     global COOKIE_DOMAIN, COOKIE_SECURE
@@ -197,6 +238,9 @@ def main():
     )
     parser.add_argument("-p", "--port", type=int, help="Port to listen on, default 80")
     parser.add_argument("-a", "--adduser", action="store_true")
+    parser.add_argument(
+        "--addbasicuser", action="store_true", help="Add a user using basic auth"
+    )
     parser.add_argument(
         "--nosecure",
         action="store_true",
@@ -220,15 +264,23 @@ def main():
         COOKIE_SECURE = True
     if args.adduser:
         username = input("Username: ")
-        password = getpass.getpass("Password: ")
+        password = promptpassword()
         addlogin(username, password)
+    elif args.addbasicuser:
+        username = input("Username: ")
+        addbasiclogin(username)
     elif args.domain:
         COOKIE_DOMAIN = args.domain
         loadlogins()
         app.run(host="0.0.0.0", port=args.port, debug=args.debug)
     else:
-        print("Either -d or -a must be supplied or environment set!")
+        log("Either -d or -a must be supplied or environment set!")
         sys.exit(1)
+
+
+def log(msg):
+    sys.stderr.write("{}\n".format(msg))
+    sys.stderr.flush()
 
 
 if __name__ == "__main__":

@@ -151,7 +151,7 @@ def gencookie():
 
 def loadlogins(ignoreerrors=False):
     LOGINS.update(loadfile(LOGINS_FILE, ignoreerrors))
-    BASIC_AUTH_LOGINS.update(loadfile(BASIC_AUTH_LOGINS_FILE, ignoreerrors))
+    BASIC_AUTH_LOGINS.update(loadfile(BASIC_AUTH_LOGINS_FILE, True))
     OTPHASHES.update(loadfile(OTP_FILE, True))
 
 
